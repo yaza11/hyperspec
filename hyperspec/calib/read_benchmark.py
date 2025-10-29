@@ -2,8 +2,8 @@
 from tqdm import tqdm
 
 from spectral import open_image
-from calib.bil_reader import BilReader
-from calib.file_finder import FileFinder
+from hyperspec.calib.bil_reader import BilReader
+from hyperspec.file_finder import FileFinder
 
 ff = FileFinder(
     r"\\hlabstorage.dmz.marum.de\scratch\Yannick\hyperspec\iceland\qd_Geld_3.1_105-130cm_04082025_5_2025-08-04_12-24-46\capture")

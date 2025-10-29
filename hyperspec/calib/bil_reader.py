@@ -4,7 +4,7 @@ from typing import Literal
 import numpy as np
 from tqdm import tqdm
 
-from calib.header import read_header
+from hyperspec.calib.header import read_header
 
 # https://www.nv5geospatialsoftware.com/docs/ENVIHeaderFiles.html
 ENVI_DATA_TYPE_TO_NP = {
@@ -134,7 +134,7 @@ class BilReader:
         self._open_file = open(self._path_file_binary, 'rb')
 
     def reset_seek(self):
-        self._open_file.seek(self._initial_offset)
+        self._open_file.seek(self._offset_roi)
 
     @property
     def num_bytes_per_item(self):
@@ -182,7 +182,6 @@ class BilReader:
         return np.frombuffer(line_data, dtype=self._data_type)[self._mask_roi_per_line]
 
     def get_spectrum(self, i, j, in_mask=False):
-        """this function is not aware of ROI"""
         # set to start of line
         offset = self._offset_roi + i * self._num_bytes_per_line
         if in_mask:
@@ -202,31 +201,30 @@ class BilReader:
     def get_iterable(self):
         return BilIterator(self)
 
-    def read_single_channel(self, wavelength) -> np.ndarray[int]:
+    def read_single_channel(self, wavelength) -> np.ndarray[np.uint8]:
         idx_wavelength = np.argmin(np.abs(wavelength - self.wavelengths_nm))
 
         n_pixels_x = self._roi_x_max - self._roi_x_min
         # we need to jump between lines
         num_bytes_per_chunk = self._num_bytes_per_item * self._num_columns
-        num_bytes_before_roi = self._num_bytes_per_item * self._roi_x_min
+        num_bytes_before_roi_x_dir = self._num_bytes_per_item * self._roi_x_min
 
-        jump_nbytes_before_line = idx_wavelength * num_bytes_per_chunk + num_bytes_before_roi
+        jump_nbytes_before_line = idx_wavelength * num_bytes_per_chunk + num_bytes_before_roi_x_dir
 
         # read data of all pixels in row for one specific band
         num_bytes = self._num_bytes_per_item * n_pixels_x
 
         img = np.zeros((self.rows_to_iterate.shape[0], n_pixels_x), dtype=self._data_type)
 
-        offset = self._offset_roi
         for jdx, j in tqdm(enumerate(self.rows_to_iterate),
                            total=self.rows_to_iterate.shape[0],
                            desc=f'reading data for wavelength {self.wavelengths_nm[idx_wavelength]} nm'):
-            self._open_file.seek(jump_nbytes_before_line + offset)
+            offset = self._num_bytes_per_line * j + jump_nbytes_before_line
+            self._open_file.seek(offset)
             img[jdx, :] = np.frombuffer(
                 self._open_file.read(num_bytes),
                 dtype=self._data_type
             )
-            offset = self._num_bytes_per_line * j + self._offset_roi
         return (img / img.max() * 255).astype(np.uint8)
 
     def get_rgb_img(self):
@@ -237,6 +235,7 @@ class BilIterator:
     def __init__(self, bil_reader: BilReader):
         self._bil_reader = bil_reader
         self._bil_reader.reset_seek()
+
         self._current_line = self._bil_reader.rows_to_iterate[0]
         self._last_line = self._bil_reader.rows_to_iterate[-1]
 
@@ -254,8 +253,7 @@ class BilIterator:
 
 
 if __name__ == '__main__':
-    from calib.file_finder import FileFinder
-    import matplotlib.pyplot as plt
+    from hyperspec.file_finder import FileFinder
 
     ff = FileFinder(
         r"\\hlabstorage.dmz.marum.de\scratch\Yannick\hyperspec\iceland\qd_Geld_3.1_105-130cm_04082025_5_2025-08-04_12-24-46\capture")

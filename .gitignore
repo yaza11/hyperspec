@@ -2,5 +2,7 @@ _local.py
 
 test_cambodia/*
 test_iceland/*
-from_napari_sediment/*
+hyperspec/_from_napari_sediment/*
 __pychache__/*
+hyperspec/_old_notebooks/*
+.venv/*

@@ -4,8 +4,8 @@ import numpy as np
 from spectral import open_image
 from tqdm import tqdm
 
-from calib.bil_reader import BilReader
-from calib.file_finder import FileFinder
+from hyperspec.calib.bil_reader import BilReader
+from hyperspec.file_finder import FileFinder
 
 
 def reshape_line_bil(line_bil, num_columns):
@@ -39,7 +39,8 @@ def calib_spec(spec: np.ndarray, j: int, white_ref, black_ref):
 
 def calib_row_fast(line_bil, white_avg_bil, dark_avg_bil):
     line_bil_float = line_bil.astype(float)
-    return (line_bil_float - dark_avg_bil) / (white_avg_bil - dark_avg_bil)
+    cal = (line_bil_float - dark_avg_bil) / (white_avg_bil - dark_avg_bil)
+    return np.clip(cal, 0, 1)
 
 
 def resample_bil_line(line_bil, *, wavelengths, downsampling_factor=1):
@@ -74,14 +75,14 @@ def resample_bil_line(line_bil, *, wavelengths, downsampling_factor=1):
     return new.astype(float) / downsampling_factor
 
 
-def write_calibrated_resampled_hdf(path_file_hdf5, b_reader, white_ref_bil, dark_ref_bil):
+def write_calibrated_resampled_hdf(path_file_hdf5, b_reader: BilReader, white_ref_bil, dark_ref_bil):
     hdf = h5py.File(path_file_hdf5, 'w')
 
     hdf.create_dataset(
         name='roi_calibrated',
-        dtype=float,
+        dtype=np.float16,
         shape=b_reader.shape_roi,
-        # chunks=(1, 1, b_reader.num_bands)
+        chunks=(1, round(np.sqrt(b_reader.shape_roi[1])), round(np.sqrt(b_reader.shape_roi[2])))  # chunk row-wise
     )
 
     for i, line in tqdm(enumerate(b_reader.get_iterable()), desc='writing hdf', total=b_reader.shape_roi[0]):
@@ -90,9 +91,9 @@ def write_calibrated_resampled_hdf(path_file_hdf5, b_reader, white_ref_bil, dark
 
 
 if __name__ == '__main__':
-    path_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\hyperspec\iceland\qd_Geld_3.1_105-130cm_04082025_5_2025-08-04_12-24-46\capture'
-    path_file_hdf5 = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\hyperspec\iceland\qd_Geld_3.1_105-130cm_04082025_5_2025-08-04_12-24-46\python\calibrated.hdf5"
-
+    from _local import path_folder_iceland, path_file_hdf5_iceland
+    path_folder = path_folder_iceland
+    path_file_hdf5 = path_file_hdf5_iceland
 
     ff = FileFinder(path_folder)
 

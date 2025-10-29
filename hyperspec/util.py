@@ -12,6 +12,18 @@ def get_rgb(img: BilFile):
     return rgb
 
 
+def scale_image(img, crop_quantile=.05):
+    lower = np.nanquantile(img, crop_quantile)
+    upper = np.nanquantile(img, 1 - crop_quantile)
+
+    scaled = img.copy()
+    scaled[scaled > upper] = upper
+    scaled[scaled < lower] = lower
+    scaled -= np.nanmin(scaled)
+    scaled /= np.nanmax(scaled)
+    return scaled
+
+
 if __name__ == '__main__':
     from spectral import open_image
     from test_iceland.paths import path_file_raw
