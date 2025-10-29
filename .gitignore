@@ -1,10 +1,10 @@
 _local.py
 
-test/*
-test_cambodia/*
-test_iceland/*
-hyperspec/_from_napari_sediment/*
-__pychache__/*
-hyperspec/_old_notebooks/*
-.venv/*
-.idea/*
+test/
+test_cambodia/
+test_iceland/
+hyperspec/_from_napari_sediment/
+__pychache__/
+hyperspec/_old_notebooks/
+.venv/
+.idea/
