@@ -1,6 +1,3 @@
-import numpy as np
-
-
 def read_header(path_file_header: str):
     assert path_file_header.endswith('.hdr')
 

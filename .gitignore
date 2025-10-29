@@ -7,3 +7,4 @@ hyperspec/_from_napari_sediment/*
 __pychache__/*
 hyperspec/_old_notebooks/*
 .venv/*
+.idea/*
