@@ -1,5 +1,6 @@
 _local.py
 
+test/*
 test_cambodia/*
 test_iceland/*
 hyperspec/_from_napari_sediment/*
