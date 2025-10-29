@@ -4,7 +4,7 @@ test/
 test_cambodia/
 test_iceland/
 hyperspec/_from_napari_sediment/
-__pychache__/
+__pycache__/
 hyperspec/_old_notebooks/
 .venv/
 .idea/
