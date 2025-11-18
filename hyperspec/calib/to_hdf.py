@@ -1,7 +1,6 @@
 import h5py
 
 import numpy as np
-from spectral import open_image
 from tqdm import tqdm
 
 from hyperspec.calib.bil_reader import BilReader
@@ -12,13 +11,7 @@ def reshape_line_bil(line_bil, num_columns):
     return line_bil.reshape((-1, num_columns))
 
 
-def get_sensor_wise_average(path_file: str) -> np.ndarray:
-    ref = open_image(path_file).load()
-    # calc average values for each sensor --> result is 2D array where rows correspond to different sensors and columns to bands
-    return np.squeeze(ref.mean(axis=0))
-
-
-def get_sensor_wise_average_fast(path_file_header: str, path_file_binary: str) -> np.ndarray:
+def get_sensor_wise_average(path_file_header: str, path_file_binary: str) -> np.ndarray:
     reader = BilReader(path_file_header, path_file_binary)
     avg = np.zeros(reader.num_bytes_per_line // reader.num_bytes_per_item, dtype=np.uint64)
 
@@ -108,8 +101,8 @@ if __name__ == '__main__':
     # for row in tqdm(rows, desc='calibrating ...', total=n_rows):
     #     calib = calib_spec(full_img[row, :, :], row, ref_white, ref_black)
 
-    white_ref_bil = get_sensor_wise_average_fast(ff.path_white_ref_header_file, ff.path_white_ref_binary_file)
-    dark_ref_bil = get_sensor_wise_average_fast(ff.path_dark_ref_header_file, ff.path_dark_ref_binary_file)
+    white_ref_bil = get_sensor_wise_average(ff.path_white_ref_header_file, ff.path_white_ref_binary_file)
+    dark_ref_bil = get_sensor_wise_average(ff.path_dark_ref_header_file, ff.path_dark_ref_binary_file)
 
     b_reader = BilReader(
         path_file_header=ff.path_meas_header_file,
