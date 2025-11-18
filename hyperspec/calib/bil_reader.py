@@ -42,7 +42,8 @@ class BilReader:
     _byte_order: Literal['little', 'big'] = None
     _data_type: type = None
     _num_bytes_per_item: int = None
-    _initial_offset: int = None
+    # byte offsets need to be stored as uint64
+    _initial_offset: np.uint64 = None
     wavelengths_nm: np.ndarray[float] = None
 
     _num_bands: int = None
@@ -50,8 +51,8 @@ class BilReader:
     _num_columns: int = None
 
     # inferred from data format
-    _num_bytes_per_line: int = None
-    _num_bytes_in_file: int = None
+    _num_bytes_per_line: np.uint64 = None
+    _num_bytes_in_file: np.uint64 = None
 
     # inferred from ROI
     _roi_x_min: int = None
@@ -61,7 +62,7 @@ class BilReader:
 
     rows_to_iterate: np.ndarray[int] = None
     _mask_roi_per_line: np.ndarray[bool] = None
-    _offset_roi: int = None
+    _offset_roi: np.uint64 = None
 
     def __init__(
             self,
@@ -100,15 +101,15 @@ class BilReader:
         return np.repeat(self.wavelengths_nm, self._num_columns)
 
     def _set_from_attrs(self):
-        self._interleave = self.attrs['interleave']
+        self._interleave: str = self.attrs['interleave']
 
         if self._interleave != 'bil':
             raise NotImplementedError
 
         self._byte_order = BYTE_ORDER[int(self.attrs['byte order'])]
         self._data_type = ENVI_DATA_TYPE_TO_NP[int(self.attrs['data type'])]
-        self._num_bytes_per_item = np.dtype(self._data_type).itemsize
-        self._initial_offset = int(self.attrs.get('header offset', 0))
+        self._num_bytes_per_item: int = np.dtype(self._data_type).itemsize
+        self._initial_offset: np.uint64 = np.uint64(self.attrs.get('header offset', 0))
         self.wavelengths_nm = np.array(self.attrs['Wavelength'][1:-1].split(',')).astype(float)
         self.rgb_wavelengths = sorted([
             self.wavelengths_nm[int(idx)]
@@ -128,8 +129,8 @@ class BilReader:
         if sys.byteorder != self._byte_order:
             # adjust how bytes are interpreted by swapping from little to big endian or vice versa
             self._data_type = np.dtype(self._data_type).newbyteorder()
-        self._num_bytes_per_line = self._num_bytes_per_item * self._num_bands * self._num_columns
-        self._num_bytes_in_file = self._num_bytes_per_line * self._num_columns
+        self._num_bytes_per_line: np.uint64 = np.uint64(self._num_bytes_per_item * self._num_bands * self._num_columns)
+        self._num_bytes_in_file: np.uint64 = np.uint64(self._num_bytes_per_line * self._num_columns)
 
         self._open_file = open(self._path_file_binary, 'rb')
 
@@ -163,7 +164,7 @@ class BilReader:
         # define row mask
         self.rows_to_iterate = np.arange(self._roi_y_min, self._roi_y_max)
         # set the offset to the right row
-        self._offset_roi = self._initial_offset + self._num_bytes_per_line * self._roi_y_min
+        self._offset_roi: np.uint64 = np.uint64(self._initial_offset + self._num_bytes_per_line * self._roi_y_min)
         self._open_file.seek(self._offset_roi)
 
     @property
@@ -183,7 +184,7 @@ class BilReader:
 
     def get_spectrum(self, i, j, in_mask=False):
         # set to start of line
-        offset = self._offset_roi + i * self._num_bytes_per_line
+        offset: np.uint64 = self._offset_roi + i * self._num_bytes_per_line
         if in_mask:
             j += self._roi_x_min
             offset += self._num_bytes_per_line * self._roi_y_min
@@ -276,7 +277,7 @@ if __name__ == '__main__':
     # b_reader.set_roi(x_min=10, x_max=11, y_min=2700, y_max=2800)
     #
     # plt.figure()
-    # for l in tqdm(b_reader.get_iterable()):
+    for l in tqdm(b_reader.get_iterable()):
         # plt.plot(l)
-        # pass
+        pass
     # plt.show()
