@@ -233,6 +233,7 @@ def correct_save_to_zarr(
 
 
 if __name__ == '__main__':
+    pass
     # from _local import path_folder_iceland, path_file_hdf5_iceland, path_folder_zarr_iceland
     #
     # path_folder = path_folder_iceland
