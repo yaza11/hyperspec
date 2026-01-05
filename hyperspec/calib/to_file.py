@@ -133,8 +133,8 @@ def correct_save_to_zarr(
 ):
     def get_bil_reader():
         _bil_reader = BilReader(
-            path_file_header=ff.path_meas_header_file,
-            path_file_binary=ff.path_meas_binary_file
+            path_file_header=_ff.path_meas_header_file,
+            path_file_binary=_ff.path_meas_binary_file
         )
         if roi is not None:
             _bil_reader.set_roi(*roi)
@@ -150,6 +150,10 @@ def correct_save_to_zarr(
         _dark_line_channel = _dark_ref_roi[idx_band_array, :]
         _channel_calibrated = (_channel - _dark_line_channel) / (_white_line_channel - _dark_line_channel)
         # submit to zarr array
+
+        # if destripe:
+        #     _corrected = savgol_destripe(_channel_calibrated, savgol_width, savgol_order)
+
         zarr_arr[idx_band_array, :, :] = _channel_calibrated
 
     _folder = os.path.dirname(imhdr_path)
@@ -162,10 +166,10 @@ def correct_save_to_zarr(
 
     # each row contains values of a specific bands for all pixels in the ROI
     _white_ref_roi = get_sensor_wise_average(
-        ff.path_white_ref_header_file, ff.path_white_ref_binary_file, roi=bil_reader.roi
+        _ff.path_white_ref_header_file, _ff.path_white_ref_binary_file, roi=bil_reader.roi
     ).reshape((bil_reader._num_bands, -1))
     _dark_ref_roi = get_sensor_wise_average(
-        ff.path_dark_ref_header_file, ff.path_dark_ref_binary_file, roi=bil_reader.roi
+        _ff.path_dark_ref_header_file, _ff.path_dark_ref_binary_file, roi=bil_reader.roi
     ).reshape((bil_reader._num_bands, -1))
 
     downsample_bands = int(downsample_bands)
@@ -229,45 +233,35 @@ def correct_save_to_zarr(
 
 
 if __name__ == '__main__':
-    from _local import path_folder_iceland, path_file_hdf5_iceland, path_folder_zarr_iceland
-
-    path_folder = path_folder_iceland
-    path_file_hdf5 = path_file_hdf5_iceland
-
-    ff = FileFinder(path_folder)
-
-    # ref_black = get_sensor_wise_average(ff.path_dark_ref_header_file)
-    # ref_white = get_sensor_wise_average(ff.path_white_ref_header_file)
+    # from _local import path_folder_iceland, path_file_hdf5_iceland, path_folder_zarr_iceland
     #
-    # full_img = open_image(ff.)
+    # path_folder = path_folder_iceland
+    # path_file_hdf5 = path_file_hdf5_iceland
     #
-    # n_rows = full_img.shape[0]
-    # rows = np.arange(n_rows)
+    # ff = FileFinder(path_folder)
+
+
+    # roi = 1200, 1650, 290, 7600
     #
-    # for row in tqdm(rows, desc='calibrating ...', total=n_rows):
-    #     calib = calib_spec(full_img[row, :, :], row, ref_white, ref_black)
-
-    roi = 1200, 1650, 290, 7600
-
-    correct_save_to_zarr(
-        imhdr_path=ff.path_meas_header_file, zarr_path=path_folder_zarr_iceland, roi=None, use_dask=False
-    )
-
-    # %% test if this is correct
-    hyperzarr = zarr.open(path_folder_zarr_iceland, mode='r')
-
-    bil_reader = BilReader(
-        path_file_header=ff.path_meas_header_file,
-        path_file_binary=ff.path_meas_binary_file
-    )
-    wavelengths = bil_reader.rgb_wavelengths
-    idcs = np.array([np.argmin(np.abs(wv - bil_reader.wavelengths_nm)) for wv in wavelengths])
-
-    rgb = hyperzarr[idcs, :, :]
-
-    import matplotlib.pyplot as plt
-    plt.imshow(np.moveaxis(rgb, 0, -1) / rgb.max())
-    plt.show()
+    # correct_save_to_zarr(
+    #     imhdr_path=ff.path_meas_header_file, zarr_path=path_folder_zarr_iceland, roi=None, use_dask=False
+    # )
+    #
+    # # %% test if this is correct
+    # hyperzarr = zarr.open(path_folder_zarr_iceland, mode='r')
+    #
+    # bil_reader = BilReader(
+    #     path_file_header=ff.path_meas_header_file,
+    #     path_file_binary=ff.path_meas_binary_file
+    # )
+    # wavelengths = bil_reader.rgb_wavelengths
+    # idcs = np.array([np.argmin(np.abs(wv - bil_reader.wavelengths_nm)) for wv in wavelengths])
+    #
+    # rgb = hyperzarr[idcs, :, :]
+    #
+    # import matplotlib.pyplot as plt
+    # plt.imshow(np.moveaxis(rgb, 0, -1) / rgb.max())
+    # plt.show()
 
     # b_reader = BilReader(
     #     path_file_header=ff.path_meas_header_file,
