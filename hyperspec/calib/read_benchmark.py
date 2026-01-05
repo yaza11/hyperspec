@@ -1,7 +1,11 @@
 """This is the time to beat"""
 from tqdm import tqdm
 
-from spectral import open_image
+try:
+    from spectral import open_image
+except ImportError:
+    def open_image(*args, **kwargs):
+        raise ImportError('spectral package is not installed')
 from hyperspec.calib.bil_reader import BilReader
 from hyperspec.file_finder import FileFinder
 
@@ -13,11 +17,7 @@ b_reader = BilReader(
     path_file_binary=ff.path_meas_binary_file
 )
 
-for _ in tqdm(range(b_reader.num_rows)):
-    l = b_reader.get_next_line()
+# for l in tqdm(b_reader.get_iterable()):
+#     pass
 
 img_ = open_image(ff.path_meas_header_file)
-
-for j in tqdm(range(b_reader.num_rows)):
-    for i in range(b_reader.num_columns):
-        l = img_[i, j, :]
