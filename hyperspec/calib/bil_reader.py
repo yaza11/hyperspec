@@ -6,6 +6,7 @@ import numpy as np
 from tqdm import tqdm
 
 from hyperspec.calib.header import read_header
+from hyperspec.file_finder import FileFinder
 
 # https://www.nv5geospatialsoftware.com/docs/ENVIHeaderFiles.html
 ENVI_DATA_TYPE_TO_NP = {
@@ -32,40 +33,60 @@ class BilReader:
     _path_file_header: str = None
     _path_file_binary: str = None
 
+    # connection to .raw file
     _open_file = None
 
-    attrs: dict = None
-
+    # order of dimensions in the image cube
     shape_format = ('height', 'width', 'bands')
 
     # defined from header file
+    #  attributes read from the header file
+    attrs: dict = None
+    #  defines order in which values are raveled in the raw file
     _interleave: Literal['bil', 'bsq', 'bip'] = None
+    #  byte order for values in .raw file
     _byte_order: Literal['little', 'big'] = None
+    #  data type of values in the .raw file. Usually integer-type
     _data_type: type = None
-    _num_bytes_per_item: int = None  # number of bytes used to store values for a single band and pixel
-    # byte offsets need to be stored as uint64
+    #  how many bytes constitute a value in the raw file
+    _num_bytes_per_item: int = None
+    #  byte offsets need to be stored as uint64
     _initial_offset: np.uint64 = None
+    #  wavelengths of the channels
     wavelengths_nm: np.ndarray[float] = None
 
-    _num_bands: int = None
-    _num_rows: int = None
-    _num_columns: int = None
+    num_bands: int = None
+    num_rows: int = None
+    num_columns: int = None
 
     # inferred from data format
     _num_bytes_per_line: np.uint64 = None
     _num_bytes_in_file: np.uint64 = None
 
     # inferred from ROI
-    _roi_x_min: int = None
-    _roi_x_max: int = None
-    _roi_y_min: int = None
-    _roi_y_max: int = None
-
+    #  indices defining the roi, max is not included
+    roi_x_min: np.uint64 = None
+    roi_x_max: np.uint64 = None
+    roi_y_min: np.uint64 = None
+    roi_y_max: np.uint64 = None
+    #  number of values in the horizontal and vertical direction
+    num_xs_roi: np.uint64 = None
+    num_ys_roi: np.uint64 = None
+    #  indices of lines in the roi
     rows_to_iterate: np.ndarray[np.uint64] = None
+    #  mask that allows discarding values from a line that are not in the roi
     _mask_roi_per_line_values: np.ndarray[bool] = None
-    _offset_roi: np.uint64 = None  # number of bytes to skip before reaching the first line of the roi
+    #  mask that allows discarding bytes from a line that are not in the roi
+    _mask_roi_per_line_bytes: np.ndarray[bool] = None
+    #  number of bytes to skip before reaching the first line of the roi (includes initial offset)
+
+    _offset_roi: np.uint64 = None
+    #  the current line seek points to
     _current_line: int = None
-    offset: np.uint64 = None  # current byte offset (always at the start of a line)
+    #  current byte offset (always at the start of a line)
+    _offset: np.uint64 = None
+    #
+    _column_indices_bil_line_roi: np.ndarray[np.uint64] = None
 
     def __init__(
             self,
@@ -89,16 +110,28 @@ class BilReader:
     def __del__(self):
         if self._open_file is not None:
             self._open_file.close()
-        pass
+
+    @classmethod
+    def from_filefinder(cls, file_finder: FileFinder, **kwargs):
+        return cls(
+            path_file_header=file_finder.path_meas_header_file,
+            path_file_binary=file_finder.path_meas_binary_file,
+            **kwargs
+        )
+
+    @classmethod
+    def from_path_capture_folder(cls, path_capture_folder: str, **kwargs):
+        _ff = FileFinder(path_capture_folder)
+        return cls.from_filefinder(_ff, **kwargs)
 
     @property
     def shape(self):
-        return self._num_rows, self._num_columns, self._num_bands
+        return self.num_rows, self.num_columns, self.num_bands
 
     @cached_property
     def _column_indices_bil_line(self):
         # defined by interleave = 'bil'
-        return np.array(list(range(self._num_columns)) * self._num_bands)
+        return np.array(list(range(self.num_columns)) * self.num_bands)
 
     @property
     def column_indices_bil_line_roi(self):
@@ -106,7 +139,7 @@ class BilReader:
 
     @property
     def _wavelengths_bil_line(self):
-        return np.repeat(self.wavelengths_nm, self._num_columns)
+        return np.repeat(self.wavelengths_nm, self.num_columns)
 
     def _set_from_attrs(self):
         # determines how 3D values are stored sequentially
@@ -129,21 +162,25 @@ class BilReader:
             for idx in self.attrs['default bands'][1:-1].split(',')
         ], reverse=True)
 
-        self._num_bands: np.uint64 = np.uint64(self.attrs['bands'])
-        self._num_rows: np.uint64 = np.uint64(self.attrs['lines'])  # number of lines taken
-        self._num_columns: np.uint64 = np.uint64(self.attrs['samples'])  # number of sensors in a row
+        self.num_bands: np.uint64 = np.uint64(self.attrs['bands'])
+        self.num_rows: np.uint64 = np.uint64(self.attrs['lines'])  # number of lines taken
+        self.num_columns: np.uint64 = np.uint64(self.attrs['samples'])  # number of sensors in a row
 
     def _set_file_parsing(self):
         # check that byte orders are the same
         if sys.byteorder != self._byte_order:
             # adjust how bytes are interpreted by swapping from little to big endian or vice versa
             self._data_type = np.dtype(self._data_type).newbyteorder()
-        self._num_bytes_per_line: np.uint64 = self._num_bytes_per_item * self._num_bands * self._num_columns
-        self._num_bytes_in_file: np.uint64 = self._num_bytes_per_line * self._num_columns
+        self._num_bytes_per_line: np.uint64 = np.uint64(
+            self._num_bytes_per_item * self.num_bands * self.num_columns
+        )
+        self._num_bytes_in_file: np.uint64 = np.uint64(
+            self._num_bytes_per_line * self.num_columns
+        )
         self._open_file = open(self._path_file_binary, 'rb')
 
     def reset_seek(self):
-        self.offset = self._offset_roi
+        self._offset = self._offset_roi
         self._open_file.seek(self._offset_roi)
 
     @property
@@ -156,21 +193,21 @@ class BilReader:
 
     def set_roi(self, x_min: int = None, x_max: int = None, y_min: int = None, y_max: int = None):
         """Indices of the ROI. min values are inclusive, max values exclusive"""
-        assert (x_min is None) or (x_min < self._num_columns)
-        assert (x_max is None) or (x_max < self._num_columns)
-        assert (y_min is None) or (y_min < self._num_rows)
-        assert (y_max is None) or (y_max < self._num_rows)
+        assert (x_min is None) or (x_min < self.num_columns)
+        assert (x_max is None) or (x_max <= self.num_columns)
+        assert (y_min is None) or (y_min < self.num_rows)
+        assert (y_max is None) or (y_max <= self.num_rows)
 
-        self._roi_x_min: np.uint64 = np.uint64(0 if x_min is None else x_min)
-        self._roi_y_min: np.uint64 = np.uint64(0 if y_min is None else y_min)
-        self._roi_x_max: np.uint64 = np.uint64(self._num_columns if x_max is None else x_max)
-        self._roi_y_max: np.uint64 = np.uint64(self._num_rows if y_max is None else y_max)
+        self.roi_x_min: np.uint64 = np.uint64(0 if x_min is None else x_min)
+        self.roi_y_min: np.uint64 = np.uint64(0 if y_min is None else y_min)
+        self.roi_x_max: np.uint64 = np.uint64(self.num_columns if x_max is None else x_max)
+        self.roi_y_max: np.uint64 = np.uint64(self.num_rows if y_max is None else y_max)
 
-        self._num_xs_roi = self._roi_x_max - self._roi_x_min
-        self._num_ys_roi = self._roi_y_max - self._roi_y_min
+        self.num_xs_roi = self.roi_x_max - self.roi_x_min
+        self.num_ys_roi = self.roi_y_max - self.roi_y_min
 
         _xs_bytes = self._column_indices_bil_line  # this is for bytes
-        _xs = np.arange(0, self._num_columns, dtype=np.uint64)
+        _xs = np.arange(0, self.num_columns, dtype=np.uint64)
         # leave at None if both x_min and x_max are not defined
         if (x_min is not None) or (x_max is not None):
             self._mask_roi_per_line_values = (_xs >= x_min) & (_xs < x_max)
@@ -181,23 +218,21 @@ class BilReader:
 
         # define row mask
         self.rows_to_iterate: np.ndarray[np.uint64] = np.arange(
-            self._roi_y_min, self._roi_y_max, dtype=np.uint64
+            self.roi_y_min, self.roi_y_max, dtype=np.uint64
         )
         # set the offset to the right row
         self._offset_roi: np.uint64 = np.uint64(
-            self._initial_offset + self._num_bytes_per_line * self._roi_y_min
+            self._initial_offset + self._num_bytes_per_line * self.roi_y_min
         )
-        self.offset = self._offset_roi
+        self._offset = self._offset_roi
 
         self._column_indices_bil_line_roi = np.array(
-            list(np.arange(self._roi_x_min, self._roi_x_max, dtype=np.uint64)) * self._num_bands
+            list(np.arange(self.roi_x_min, self.roi_x_max, dtype=np.uint64)) * self.num_bands
         )
 
     @property
     def roi(self):
-        if self._mask_roi_per_line_bytes is None:
-            return None
-        return self._roi_x_min, self._roi_x_max, self._roi_y_min, self._roi_y_max
+        return self.roi_x_min, self.roi_x_max, self.roi_y_min, self.roi_y_max
 
     @property
     def mask_roi_per_line_values(self):
@@ -209,9 +244,9 @@ class BilReader:
 
     @property
     def shape_roi(self):
-        return self._roi_y_max - self._roi_y_min, self._roi_x_max - self._roi_x_min, self._num_bands
+        return self.roi_y_max - self.roi_y_min, self.roi_x_max - self.roi_x_min, self.num_bands
 
-    def _read_pixels_for_row_and_band(
+    def read_pixels_for_row_and_band(
             self,
             idx_row,
             idx_band,
@@ -220,9 +255,9 @@ class BilReader:
     ):
         """Reads values of all pixels for the specified row and band. This is in accordance with the BIL format."""
         if idx_pixel_min is None:
-            idx_pixel_min = self._roi_x_min
+            idx_pixel_min = self.roi_x_min
         if idx_pixel_max is None:
-            idx_pixel_max = self._roi_x_max
+            idx_pixel_max = self.roi_x_max
         idx_pixel_min = np.uint64(idx_pixel_min)
         idx_pixel_max = np.uint64(idx_pixel_max)
 
@@ -230,7 +265,7 @@ class BilReader:
         offset: np.uint64 = (
                 self._initial_offset +  # offset from file reserved for header
                 np.uint64(idx_row) * self._num_bytes_per_line +  # shift by n rows to start of ROI
-                np.uint64(idx_band) * self._num_columns * self._num_bytes_per_item +  # shift to the right band
+                np.uint64(idx_band) * self.num_columns * self._num_bytes_per_item +  # shift to the right band
                 idx_pixel_min * self._num_bytes_per_item  # within band chunk, shift to first pixel
         )
 
@@ -249,11 +284,11 @@ class BilReader:
     def get_line(self, idx_line: int):
         """Get values for all bands in a line of the ROI"""
         values = np.zeros(
-            self._num_bands * self._num_xs_roi.astype(self._num_bands.dtype), dtype=self._data_type
+            self.num_bands * self.num_xs_roi.astype(self.num_bands.dtype), dtype=self._data_type
         )
-        for idx_band in range(self._num_bands):
-            idx_expr = np.index_exp[(idx_band * self._num_xs_roi):((idx_band + 1) * self._num_xs_roi)]
-            values[idx_expr] = self._read_pixels_for_row_and_band(
+        for idx_band in range(self.num_bands):
+            idx_expr = np.index_exp[(idx_band * self.num_xs_roi):((idx_band + 1) * self.num_xs_roi)]
+            values[idx_expr] = self.read_pixels_for_row_and_band(
                 idx_row=idx_line,
                 idx_band=idx_band
             )
@@ -261,7 +296,7 @@ class BilReader:
 
     def get_next_line(self):
         if self._current_line is None:
-            self._current_line = self._roi_y_min
+            self._current_line = self.roi_y_min
         else:
             self._current_line += 1
         line = self.get_line(self._current_line)
@@ -271,10 +306,10 @@ class BilReader:
         # set to start of line
         offset: np.uint64 = self._offset_roi + np.uint64(i) * self._num_bytes_per_line
         if in_mask:  # if indices refer to offset in mask, we need to adjust the absolute values
-            assert i <= (self._roi_y_max - self._roi_y_min)
-            assert j <= (self._roi_x_max - self._roi_x_min)
-            j += self._roi_x_min
-            offset += self._num_bytes_per_line * self._roi_y_min
+            assert i <= (self.roi_y_max - self.roi_y_min)
+            assert j <= (self.roi_x_max - self.roi_x_min)
+            j += self.roi_x_min
+            offset += self._num_bytes_per_line * self.roi_y_min
 
         # select values at right index
         mask_spec = self.column_indices_bil_line_roi == j
@@ -297,13 +332,13 @@ class BilReader:
         if idx_band is None:
             idx_band = np.argmin(np.abs(wavelength - self.wavelengths_nm))
 
-        img = np.zeros((self.rows_to_iterate.shape[0], self._num_xs_roi), dtype=self._data_type)
+        img = np.zeros((self.rows_to_iterate.shape[0], self.num_xs_roi), dtype=self._data_type)
 
         for jdx, j in tqdm(enumerate(self.rows_to_iterate),
                            total=self.rows_to_iterate.shape[0],
                            desc=f'reading data for wavelength {self.wavelengths_nm[idx_band]} nm',
                            disable=not show_progress):
-            img[jdx, :] = self._read_pixels_for_row_and_band(
+            img[jdx, :] = self.read_pixels_for_row_and_band(
                 idx_row=j,
                 idx_band=idx_band
             )

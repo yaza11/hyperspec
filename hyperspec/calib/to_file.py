@@ -7,6 +7,7 @@ import numpy as np
 import zarr
 from dask.distributed import Client
 from distributed import as_completed
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from hyperspec.calib.bil_reader import BilReader
@@ -23,7 +24,7 @@ def get_sensor_wise_average(path_file_header: str, path_file_binary: str, roi=No
         reader.set_roi(x_min=roi[0], x_max=roi[1])
     else:
         reader.set_roi()
-    avg = np.zeros(reader._num_xs_roi * reader._num_bands, dtype=np.uint64)
+    avg = np.zeros(reader.num_xs_roi * reader.num_bands, dtype=np.uint64)
     # if is_mask_provided := (mask_roi is not None):
     #     avg = avg[mask_roi]
 
@@ -80,57 +81,74 @@ def resample_bil_line(line_bil, *, wavelengths, downsampling_factor=1):
     return new.astype(float) / downsampling_factor
 
 
-def write_calibrated_resampled_hdf(
+def write_calibrated_hdf(
         path_file_hdf5: str,
-        b_reader: BilReader,
-        white_ref_bil: np.ndarray,
-        dark_ref_bil: np.ndarray,
-        dtype=np.float32
+        path_folder_capture: str,
+        roi: tuple[int, int, int, int] = None,
+        chunk_size: tuple[int, int, int] = None,
+        dtype='f4'
 ):
     def _calib_row(line_bil):
         # cal = (line_bil_float - dark_avg_bil) / (white_avg_bil - dark_avg_bil)
         cal = line_bil.astype(dtype) / span + offset
         return np.clip(cal, 0, 1)
 
-    span = (white_ref_bil - dark_ref_bil).astype(dtype)
-    offset = (-dark_ref_bil / span).astype(dtype)
+    _ff = FileFinder(path_folder=path_folder_capture)
+    _bil_reader = BilReader(
+        path_file_header=_ff.path_meas_header_file,
+        path_file_binary=_ff.path_meas_binary_file
+    )
+    if roi is not None:
+        _bil_reader.set_roi(*roi)
+
+    if chunk_size is None:
+        chunk_size = (
+            1,  # num rows per chunk
+            max(10, round(_bil_reader.shape_roi[1] / 10)),  # num pixels per chunk
+            max(1, round(np.sqrt(_bil_reader.shape_roi[2]))))  # num channels per chunk
+
+    _white_ref_roi = get_sensor_wise_average(
+        _ff.path_white_ref_header_file, _ff.path_white_ref_binary_file, roi=roi
+    )
+    _dark_ref_roi = get_sensor_wise_average(
+        _ff.path_dark_ref_header_file, _ff.path_dark_ref_binary_file, roi=roi
+    )
+
+    span = (_white_ref_roi - _dark_ref_roi).astype(dtype)
+    offset = (-_dark_ref_roi / span).astype(dtype)
 
     hdf = h5py.File(path_file_hdf5, 'w')
 
     hdf.create_dataset(
         name='roi_calibrated',
         dtype=dtype,
-        shape=b_reader.shape_roi,
-        chunks=(1, round(np.sqrt(b_reader.shape_roi[1])), round(np.sqrt(b_reader.shape_roi[2])))  # chunk row-wise
+        shape=_bil_reader.shape_roi,
+        chunks=chunk_size
     )
+    hdf.create_group(name='metadata')
+    hdf['metadata'].create_dataset('wavelength', data=list(_bil_reader.wavelengths_nm))
+
+    hdf['metadata'].create_dataset('roi', data=_bil_reader.roi)
+
     dset = hdf['roi_calibrated']
 
-    num_columns = b_reader.shape_roi[1]
-    for i, line in tqdm(enumerate(b_reader.get_iterable()), desc='writing hdf', total=b_reader.shape_roi[0]):
-        c = _calib_row(line)
-        # line_bil.reshape((-1, num_columns))
-        # hdf['roi_calibrated'][i, :, :] = reshape_line_bil(c, b_reader.shape_roi[1]).T
-        dset[i, :, :] = c.reshape((-1, num_columns)).T
+    num_columns = _bil_reader.shape_roi[1]
+    for i, line in tqdm(enumerate(_bil_reader.get_iterable()), desc='writing hdf', total=_bil_reader.shape_roi[0]):
+        dset[i, :, :] = _calib_row(line).reshape((-1, num_columns)).T
 
 
 def correct_save_to_zarr(
         imhdr_path: str,
         zarr_path: str,
         roi: tuple = None,
-        white_file_path: str = None,
-        dark_for_im_file_path: str = None,
-        dark_for_white_file_path: str = None,
         band_indices=None,
         min_max_bands=None,
         downsample_bands=1,
-        background_correction=True,
-        destripe=False,
-        savgol_width=100,
-        savgol_order=2,
         use_dask=False,
         chunk_size=500,
-        use_float=True
+        dtype='f4'
 ):
+    """Function for writing zarr array for a roi compatible with the function in napari-sediment."""
     def get_bil_reader():
         _bil_reader = BilReader(
             path_file_header=_ff.path_meas_header_file,
@@ -141,7 +159,7 @@ def correct_save_to_zarr(
         return _bil_reader
 
     def correct_single_channel(idx_band_array, idx_band) -> None:
-        # TODO: do we always need a new reader instance?
+        # need to do this, otherwise cannot be serialized
         _reader = get_bil_reader()
         # 2D array
         _channel = _reader.read_single_channel(idx_band=idx_band, show_progress=False)
@@ -154,23 +172,23 @@ def correct_save_to_zarr(
         # if destripe:
         #     _corrected = savgol_destripe(_channel_calibrated, savgol_width, savgol_order)
 
-        zarr_arr[idx_band_array, :, :] = _channel_calibrated
+        zarr_arr[idx_band_array, :, :] = np.clip(_channel_calibrated, 0, 1)
 
     _folder = os.path.dirname(imhdr_path)
     _ff = FileFinder(_folder)
     bil_reader = get_bil_reader()
 
     _wavelengths = bil_reader.wavelengths_nm
-    _num_columns = int(bil_reader._num_xs_roi)
-    _num_lines = int(bil_reader._num_ys_roi)
+    _num_columns = int(bil_reader.num_xs_roi)
+    _num_lines = int(bil_reader.num_ys_roi)
 
     # each row contains values of a specific bands for all pixels in the ROI
     _white_ref_roi = get_sensor_wise_average(
         _ff.path_white_ref_header_file, _ff.path_white_ref_binary_file, roi=bil_reader.roi
-    ).reshape((bil_reader._num_bands, -1))
+    ).reshape((bil_reader.num_bands, -1))
     _dark_ref_roi = get_sensor_wise_average(
         _ff.path_dark_ref_header_file, _ff.path_dark_ref_binary_file, roi=bil_reader.roi
-    ).reshape((bil_reader._num_bands, -1))
+    ).reshape((bil_reader.num_bands, -1))
 
     downsample_bands = int(downsample_bands)
 
@@ -184,15 +202,10 @@ def correct_save_to_zarr(
         band_indices = np.arange(min_band, max_band + 1, downsample_bands)
         num_bands = len(band_indices)
     else:
-        num_bands = bil_reader._num_bands
+        num_bands = bil_reader.num_bands
         band_indices = np.arange(0, num_bands, downsample_bands, dtype=int)
         num_bands = len(band_indices)
     band_indices.astype(int, copy=False)
-
-    if use_float:
-        dtype = 'f4'
-    else:
-        dtype = 'u2'
 
     zarr_arr = zarr.create_array(
         zarr_path,
@@ -232,25 +245,68 @@ def correct_save_to_zarr(
     }
 
 
+def get_rgb_from_file(path_file: str):
+    file_type = path_file.split('.')[-1]
+    if file_type == 'raw':
+        bil_reader = BilReader.from_path_capture_folder(os.path.dirname(path_file))
+        return bil_reader.get_rgb_img()
+    elif file_type == 'hdf5':
+        hdf = h5py.File(path_file, 'r')
+        dataset = hdf['roi_calibrated']
+        wavelengths = np.array(hdf['metadata']['wavelength'])
+    elif file_type == 'zarr':
+        dataset =  zarr.open(path_file, mode='r')
+        wavelengths = np.array(dataset.attrs['metadata']['wavelength'])
+    else:
+        raise ValueError(f'Unrecognized file type {file_type}')
+    wavelengths_rgb = [646.51, 553.12, 475.44]
+
+    idcs = np.array([np.argmin(np.abs(wv - wavelengths)) for wv in wavelengths_rgb])
+    roi_ = []
+    for idx in tqdm(idcs, total=len(idcs), desc='reading RoI RGB channels'):
+        if file_type == 'hdf5':
+            img = dataset[:, :, idx]
+        else:
+            img = dataset[idx, :, :]
+        roi_.append(img)
+    return np.stack(roi_, axis=-1)
+
+
 if __name__ == '__main__':
     pass
-    # from _local import path_folder_iceland, path_file_hdf5_iceland, path_folder_zarr_iceland
-    #
-    # path_folder = path_folder_iceland
-    # path_file_hdf5 = path_file_hdf5_iceland
-    #
-    # ff = FileFinder(path_folder)
+    from _local import path_folder_iceland, path_file_hdf5_iceland, path_folder_zarr_iceland
 
+    path_folder = path_folder_iceland
+    path_file_hdf5 = path_file_hdf5_iceland
+    roi = 1200, 1650, 290, 7600
+    ff = FileFinder(path_folder)
 
-    # roi = 1200, 1650, 290, 7600
-    #
-    # correct_save_to_zarr(
-    #     imhdr_path=ff.path_meas_header_file, zarr_path=path_folder_zarr_iceland, roi=None, use_dask=False
-    # )
-    #
-    # # %% test if this is correct
-    # hyperzarr = zarr.open(path_folder_zarr_iceland, mode='r')
-    #
+    write_calibrated_hdf(
+        path_file_hdf5=path_file_hdf5, path_folder_capture=path_folder, roi=None
+    )
+
+    img = get_rgb_from_file(path_file_hdf5)
+    import matplotlib.pyplot as plt
+    plt.imshow(img / img.max())
+    plt.show()
+
+    # compare speed of saving and reading hdf vs zarr
+    #  writing zarr ...
+    correct_save_to_zarr(
+        imhdr_path=ff.path_meas_header_file,
+        zarr_path=path_folder_zarr_iceland,
+        roi=roi,
+        use_dask=False
+    )
+
+    img = get_rgb_from_file(path_folder_zarr_iceland)
+
+    plt.imshow(img / img.max())
+    plt.show()
+
+    # TODO: spectrum and channel-wise
+    # ...
+
     # bil_reader = BilReader(
     #     path_file_header=ff.path_meas_header_file,
     #     path_file_binary=ff.path_meas_binary_file
